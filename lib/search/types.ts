@@ -4,6 +4,12 @@ export type SearchResult = {
   title?: string;
   url: string;
   excerpt?: string;
+  searchTerms?: string[];
+  matchedSections?: Array<{
+    title?: string;
+    url: string;
+    excerpt?: string;
+  }>;
 };
 
 export interface SearchProvider {

@@ -18,6 +18,12 @@ const DEFAULT_GROQ_TIMEOUT_MS = 20_000;
 const MAX_SOURCE_BRIEF_CHARACTERS = 12_000;
 const MAX_SOURCE_CHARACTERS = 1_500;
 const MAX_HISTORY_TURNS = 3;
+const EXCERPT_LEADING_CONTEXT_CHARACTERS = 250;
+const FOLLOW_UP_STOP_WORDS = new Set([
+  "about", "actually", "after", "also", "could", "does", "good", "have",
+  "important", "into", "look", "should", "that", "their", "then", "there",
+  "these", "they", "this", "what", "when", "where", "which", "with", "would",
+]);
 
 type SynthesisProvider = "deepseek" | "groq";
 
@@ -76,30 +82,57 @@ const groqResponseSchema = {
         properties: {
           title: { type: "string" },
           detail: { type: "string" },
-          citationIds: { type: "array", items: { type: "integer" } },
+          citationIds: {
+            type: "array",
+            items: { type: "integer" },
+            maxItems: 5,
+          },
         },
         required: ["title", "detail", "citationIds"],
         additionalProperties: false,
       },
+      maxItems: 4,
     },
     evidenceLevel: {
       type: "string",
       enum: ["strong", "moderate", "limited", "insufficient", "mixed"],
     },
-    limitations: { type: "array", items: { type: "string" } },
-    citationIds: { type: "array", items: { type: "integer" } },
+    limitations: { type: "array", items: { type: "string" }, maxItems: 5 },
   },
-  required: ["answerSummary", "keyFindings", "evidenceLevel", "limitations", "citationIds"],
+  required: ["answerSummary", "keyFindings", "evidenceLevel", "limitations"],
   additionalProperties: false,
 } as const;
 
-function buildSourceBrief(context: PreparedResearchContext): string {
+function followUpTerms(question: string): string[] {
+  return [...new Set(question.toLowerCase().match(/[a-z0-9]+/g) ?? [])]
+    .filter((term) => term.length >= 4 && !FOLLOW_UP_STOP_WORDS.has(term))
+    .sort((left, right) => right.length - left.length);
+}
+
+function focusedExcerpt(content: string, terms: string[]): string {
+  if (terms.length === 0) return content.slice(0, MAX_SOURCE_CHARACTERS);
+
+  const normalizedContent = content.toLowerCase();
+  const matchIndexes = terms
+    .map((term) => normalizedContent.indexOf(term))
+    .filter((index) => index >= 0);
+  if (matchIndexes.length === 0) return content.slice(0, MAX_SOURCE_CHARACTERS);
+
+  const matchIndex = Math.min(...matchIndexes);
+  const start = Math.max(0, matchIndex - EXCERPT_LEADING_CONTEXT_CHARACTERS);
+  return content.slice(start, start + MAX_SOURCE_CHARACTERS);
+}
+
+function buildSourceBrief(context: PreparedResearchContext, focusQuestion?: string): string {
   let remaining = MAX_SOURCE_BRIEF_CHARACTERS;
   const sections: string[] = [];
+  const terms = focusQuestion ? followUpTerms(focusQuestion) : [];
 
   for (const source of context.retrieval.selectedSources) {
     if (remaining <= 0) break;
-    const content = source.content.slice(0, Math.min(MAX_SOURCE_CHARACTERS, remaining));
+    const content = (
+      focusQuestion ? focusedExcerpt(source.content, terms) : source.matchedContent
+    ).slice(0, remaining);
     sections.push(`[Source ${source.id}]\nTitle: ${source.title}\nURL: ${source.url}\nContent:\n${content}`);
     remaining -= content.length;
   }
@@ -107,10 +140,56 @@ function buildSourceBrief(context: PreparedResearchContext): string {
   return sections.join("\n\n---\n\n");
 }
 
+function inlineCitationIds(text: string): number[] {
+  return [...text.matchAll(/\[(\d+)\]/g)].map((match) => Number(match[1]));
+}
+
+function normalizeCitations(
+  output: SynthesisModelOutput,
+  context: PreparedResearchContext,
+): SynthesisModelOutput {
+  const validSourceIds = new Set(context.retrieval.selectedSources.map((source) => source.id));
+  const keyFindings = output.keyFindings.flatMap((finding) => {
+    const citationIds = [...new Set([
+      ...finding.citationIds,
+      ...inlineCitationIds(finding.detail),
+    ])].filter((id) => validSourceIds.has(id));
+
+    if (citationIds.length === 0) return [];
+    const hasInlineCitation = inlineCitationIds(finding.detail).some((id) => citationIds.includes(id));
+    return [{
+      ...finding,
+      detail: hasInlineCitation
+        ? finding.detail
+        : `${finding.detail} ${citationIds.map((id) => `[${id}]`).join(" ")}`,
+      citationIds,
+    }];
+  });
+
+  if (keyFindings.length === 0) {
+    throw new Error("The synthesis model returned no cited findings.");
+  }
+
+  const findingCitationIds = [...new Set(keyFindings.flatMap((finding) => finding.citationIds))];
+  const summaryHasCitation = inlineCitationIds(output.answerSummary).some((id) => validSourceIds.has(id));
+  return {
+    ...output,
+    answerSummary: summaryHasCitation
+      ? output.answerSummary
+      : `${output.answerSummary} ${findingCitationIds.map((id) => `[${id}]`).join(" ")}`,
+    keyFindings,
+  };
+}
+
 function allCitationIds(output: SynthesisModelOutput): number[] {
+  const inlineIds = [
+    output.answerSummary,
+    ...output.keyFindings.map((finding) => finding.detail),
+  ].flatMap(inlineCitationIds);
+
   return [...new Set([
-    ...output.citationIds,
     ...output.keyFindings.flatMap((finding) => finding.citationIds),
+    ...inlineIds,
   ])];
 }
 
@@ -211,19 +290,18 @@ Return JSON only in this exact shape:
     {"title": "Short finding title", "detail": "A scannable explanation with inline citations like [1].", "citationIds": [1]}
   ],
   "evidenceLevel": "strong | moderate | limited | insufficient | mixed",
-  "limitations": ["Concrete limitation of the source set."],
-  "citationIds": [1]
+  "limitations": ["Concrete limitation of the source set."]
 }
 
-Provide 2 to 4 keyFindings and keep the entire response under 700 words. citationIds must only use supplied source IDs. Include every source cited in the text. The word json is intentional: emit valid JSON and no markdown fence.`;
+Provide 1 to 4 keyFindings and keep the entire response under 700 words. Prefer 2 to 4 findings for broad questions; one is acceptable for a narrow follow-up. Every keyFinding must cite at least one supplied source both inline in detail and in its citationIds array. citationIds must only use supplied source IDs. The answerSummary may use the same inline citation format. The word json is intentional: emit valid JSON and no markdown fence.`;
 
 function buildMessages(
   context: PreparedResearchContext,
   question: string,
   history: ConversationTurn[],
 ): { messages: ChatMessage[]; sourceBrief: string } {
-  const sourceBrief = buildSourceBrief(context);
   const recentHistory = history.slice(-MAX_HISTORY_TURNS);
+  const sourceBrief = buildSourceBrief(context, recentHistory.length > 0 ? question : undefined);
   return {
     sourceBrief,
     messages: [
@@ -327,12 +405,13 @@ function toEvidenceSynthesis(
   context: PreparedResearchContext,
   generation: EvidenceSynthesis["generation"],
 ): EvidenceSynthesis {
+  const normalizedOutput = normalizeCitations(providerOutput.output, context);
   return {
-    answerSummary: providerOutput.output.answerSummary,
-    keyFindings: providerOutput.output.keyFindings,
-    evidenceLevel: providerOutput.output.evidenceLevel,
-    limitations: providerOutput.output.limitations,
-    citations: resolveCitations(providerOutput.output, context),
+    answerSummary: normalizedOutput.answerSummary,
+    keyFindings: normalizedOutput.keyFindings,
+    evidenceLevel: normalizedOutput.evidenceLevel,
+    limitations: normalizedOutput.limitations,
+    citations: resolveCitations(normalizedOutput, context),
     generation,
     usage: {
       promptTokens: providerOutput.promptTokens,

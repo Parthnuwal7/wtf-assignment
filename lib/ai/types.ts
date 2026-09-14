@@ -51,11 +51,10 @@ export const SynthesisModelOutputSchema = z.object({
   keyFindings: z.array(z.object({
     title: z.string().trim().min(1).max(120),
     detail: z.string().trim().min(1).max(700),
-    citationIds: z.array(z.number().int().positive()).min(1).max(5),
+    citationIds: z.array(z.number().int().positive()).max(5),
   })).max(4),
   evidenceLevel: EvidenceLevelSchema,
   limitations: z.array(z.string().trim().min(1).max(500)).max(5),
-  citationIds: z.array(z.number().int().positive()).max(16),
 }).transform((output) => (
   output.keyFindings.length === 0 ? { ...output, evidenceLevel: "insufficient" as const } : output
 ));

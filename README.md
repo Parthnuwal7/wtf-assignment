@@ -31,11 +31,12 @@ The client-side Pagefind integration uses a same-origin Next proxy because the r
 - Structured Groq planner with Zod validation and a visible fallback if Groq is unavailable.
 - Reuses the site's existing Pagefind index; no embeddings or vector database.
 - Clean article extraction from `article`, with `data-pagefind-body` and `main` fallbacks.
+- Pagefind excerpts and matching sub-sections are expanded to nearby paragraph boundaries before synthesis; full cleaned text is retained only for query-focused follow-ups.
 - Eight retrieved sources, with a compact capped source brief sent to DeepSeek.
 - Structured response: direct answer, 2–4 key findings, evidence level, limitations, and citations.
 - Inline citations open the original source and show a preview on hover.
 - Source and process popovers explain provenance.
-- In-memory follow-up sessions reuse retrieved sources for 20 minutes.
+- In-memory follow-up sessions reuse retrieved sources for 20 minutes and select query-focused excerpts from their cached article text.
 - Provider-resilient synthesis: DeepSeek primary, Groq GPT-OSS-120B fallback, JSON repair, Zod validation, and verified citation IDs.
 
 ## Requirements
@@ -104,8 +105,7 @@ Useful test questions:
 ## Cost and latency choices
 
 - The first turn retrieves up to eight sources, then sends a stable source brief capped at 12,000 characters to the synthesis provider.
-- Follow-ups reuse the original source brief and skip retrieval/fetching work.
-- DeepSeek receives the stable brief as a fixed prefix, allowing its automatic context cache to reduce repeat-turn latency and input cost when a cache hit occurs.
+- Follow-ups reuse the original fetched source set and skip Pagefind/article fetching, while selecting text windows around the new question's important terms.
 - Synthesis output is capped at 1,200 tokens and uses non-thinking mode for concise evidence answers.
 - DeepSeek gets one short attempt. Missing configuration, timeout, HTTP error, malformed output, or invalid citations automatically trigger Groq synthesis with strict JSON-schema output.
 

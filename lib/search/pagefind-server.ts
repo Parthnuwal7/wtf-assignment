@@ -13,6 +13,13 @@ type PagefindSearchResult = {
     url: string;
     meta?: { title?: string };
     excerpt?: string;
+    plain_excerpt?: string;
+    sub_results?: Array<{
+      title?: string;
+      url: string;
+      excerpt?: string;
+      plain_excerpt?: string;
+    }>;
   }>;
 };
 
@@ -73,7 +80,13 @@ export const looksmaxServerPagefindProvider: SearchProvider = {
             score: result.score,
             title: data.meta?.title,
             url: toTargetPath(data.url),
-            excerpt: data.excerpt,
+            excerpt: data.plain_excerpt ?? data.excerpt,
+            searchTerms: query.toLowerCase().match(/[a-z0-9]+/g) ?? [],
+            matchedSections: data.sub_results?.map((section) => ({
+              title: section.title,
+              url: toTargetPath(section.url),
+              excerpt: section.plain_excerpt ?? section.excerpt,
+            })),
           };
         }),
       );
