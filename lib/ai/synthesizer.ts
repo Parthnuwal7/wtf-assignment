@@ -147,7 +147,13 @@ function parseModelOutput(content: string, providerName: string): SynthesisModel
   const parsed = SynthesisModelOutputSchema.safeParse(
     JSON.parse(jsonrepair(trimmed.slice(start, end + 1))),
   );
-  if (!parsed.success) throw new Error(`${providerName} returned an invalid synthesis shape.`);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`${providerName} returned an invalid synthesis shape (${issues}).`);
+  }
   return parsed.data;
 }
 
@@ -181,6 +187,17 @@ async function errorDetail(response: Response): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+async function providerHttpError(providerName: string, response: Response): Promise<Error> {
+  const detail = await errorDetail(response);
+  if (response.status === 429) {
+    // Provider rate-limit bodies include org IDs and billing links; keep only the
+    // retry hint so the message is safe and useful to show in the UI.
+    const retryHint = detail?.match(/try again in [\d.]+\s*[a-z]+/i)?.[0];
+    return new Error(`${providerName} rate limit reached${retryHint ? `; ${retryHint}` : ""}.`);
+  }
+  return new Error(`${providerName} returned HTTP ${response.status}${detail ? `: ${detail}` : "."}`);
 }
 
 const systemPrompt = `You are an evidence-focused research synthesizer. Answer only from the supplied source brief.
@@ -244,10 +261,7 @@ async function requestDeepSeek(messages: ChatMessage[], sourceBriefLength: numbe
     cache: "no-store",
   });
 
-  if (!response.ok) {
-    const detail = await errorDetail(response);
-    throw new Error(`DeepSeek returned HTTP ${response.status}${detail ? `: ${detail}` : "."}`);
-  }
+  if (!response.ok) throw await providerHttpError("DeepSeek", response);
 
   const payload = await response.json() as {
     choices?: Array<{ message?: { content?: string } }>;
@@ -293,10 +307,7 @@ async function requestGroq(messages: ChatMessage[], sourceBriefLength: number): 
     cache: "no-store",
   });
 
-  if (!response.ok) {
-    const detail = await errorDetail(response);
-    throw new Error(`Groq returned HTTP ${response.status}${detail ? `: ${detail}` : "."}`);
-  }
+  if (!response.ok) throw await providerHttpError("Groq", response);
 
   const payload = await response.json() as {
     choices?: Array<{ message?: { content?: string } }>;

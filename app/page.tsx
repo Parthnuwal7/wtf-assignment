@@ -95,7 +95,7 @@ function AnswerText({ answer, sources }: { answer: string; sources: Source[] }) 
 function SynthesisContent({ synthesis, sources }: { synthesis: EvidenceSynthesis; sources: Source[] }) {
   return <>
     <div className="answer-summary"><AnswerText answer={synthesis.answerSummary} sources={sources} /></div>
-    <section className="findings-section">
+    {synthesis.keyFindings.length > 0 && <section className="findings-section">
       <p className="eyebrow">What the sources point to</p>
       <div className="finding-grid">
         {synthesis.keyFindings.map((finding) => <article className="finding-card" key={finding.title}>
@@ -103,14 +103,14 @@ function SynthesisContent({ synthesis, sources }: { synthesis: EvidenceSynthesis
           <AnswerText answer={finding.detail} sources={sources} />
         </article>)}
       </div>
-    </section>
+    </section>}
   </>;
 }
 
-function SourcesDetail({ sources }: { sources: Source[] }) {
+function SourcesDetail({ sources, heading }: { sources: Source[]; heading?: string }) {
   return <>
     <p className="popover-eyebrow">Retrieved sources</p>
-    <h3>{sources.length} sources informed this answer</h3>
+    <h3>{heading ?? `${sources.length} sources informed this answer`}</h3>
     <div className="source-stack">
       {sources.map((source) => <a className="source-row" href={`https://looksmaxxing.guide${source.url}`} key={source.id} target="_blank" rel="noreferrer">
         <span className="source-index">{source.id}</span>
@@ -231,7 +231,8 @@ export default function Home() {
         </section>}
       </> : <>
         <p className="eyebrow">Research context ready</p><h2>The source review completed, but synthesis is unavailable.</h2><p className="configuration-note">{result.synthesisError ?? "Configure DeepSeek to generate the evidence summary."}</p>
-        <footer className="answer-footer"><p>{sources.length} sources are ready for synthesis.</p><div className="answer-actions"><DetailPill icon={<SourceIcon />} label="Sources"><SourcesDetail sources={sources} /></DetailPill><DetailPill icon={<ProcessIcon />} label="Process"><ProcessDetail research={result.research} /></DetailPill></div></footer>
+        <section className="findings-section"><SourcesDetail sources={sources} heading={`${sources.length} sources were retrieved — read them directly while synthesis is unavailable`} /></section>
+        <footer className="answer-footer"><p>{sources.length} sources are ready for synthesis.</p><div className="answer-actions"><DetailPill icon={<ProcessIcon />} label="Process"><ProcessDetail research={result.research} /></DetailPill></div></footer>
       </>}
     </section>}
   </main>;

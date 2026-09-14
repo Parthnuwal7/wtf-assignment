@@ -46,15 +46,19 @@ export const EvidenceLevelSchema = z.enum([
 
 export const SynthesisModelOutputSchema = z.object({
   answerSummary: z.string().trim().min(1).max(1_800),
+  // Models legitimately return no findings when the sources do not address the
+  // question; forcing a minimum would only pressure them to invent citations.
   keyFindings: z.array(z.object({
     title: z.string().trim().min(1).max(120),
     detail: z.string().trim().min(1).max(700),
     citationIds: z.array(z.number().int().positive()).min(1).max(5),
-  })).min(2).max(4),
+  })).max(4),
   evidenceLevel: EvidenceLevelSchema,
   limitations: z.array(z.string().trim().min(1).max(500)).max(5),
   citationIds: z.array(z.number().int().positive()).max(16),
-});
+}).transform((output) => (
+  output.keyFindings.length === 0 ? { ...output, evidenceLevel: "insufficient" as const } : output
+));
 
 export type EvidenceLevel = z.infer<typeof EvidenceLevelSchema>;
 export type SynthesisModelOutput = z.infer<typeof SynthesisModelOutputSchema>;
